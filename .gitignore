@@ -1,0 +1,29 @@
+# Competition data: download from Kaggle; do not redistribute.
+MAGFiLO_1.0_Kaggle_2026/
+data/
+
+# Local environments and secrets.
+.conda-envs/
+.venv/
+venv/
+.env
+*.env
+.kaggle/
+
+# Generated runs, masks, checkpoints, predictions, and submissions.
+artifacts/
+outputs/
+models/*.pt
+models/*.pth
+*.ckpt
+*.onnx
+submission*.csv
+*.jsonl
+
+# Python/cache/editor files.
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.DS_Store
+.ipynb_checkpoints/
