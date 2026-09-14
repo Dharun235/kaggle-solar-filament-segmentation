@@ -131,7 +131,7 @@ def main():
     model=UNet().to(device); opt=torch.optim.AdamW(model.parameters(),lr=2e-3,weight_decay=1e-4)
     for epoch in range(args.epochs):
         model.train(); total=0.
-        for x,y in loader: opt.zero_grad(); z=loss_fn(model(x.to(device)),y.to(device)); z.backward(); opt.step(); total+=float(z)
+        for x,y in loader: opt.zero_grad(); z=loss_fn(model(x.to(device)),y.to(device)); z.backward(); opt.step(); total += z.detach().item()
         print(f"epoch={epoch+1}/{args.epochs} loss={total/max(len(loader),1):.4f}",flush=True)
     ckpt=args.run_dir/"patch_unet.pt"; ckpt.parent.mkdir(parents=True,exist_ok=True); torch.save(model.state_dict(),ckpt)
     model.eval(); write_predictions(model,args.val,args.raw_val,args.run_dir/"masks/val",device,args.threshold,args.min_area,args.max_candidates,args.stride,args.infer_batch); write_predictions(model,args.test,args.raw_test,args.run_dir/"masks/test",device,args.threshold,args.min_area,args.max_candidates,args.stride,args.infer_batch)
