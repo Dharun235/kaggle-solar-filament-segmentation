@@ -5,8 +5,8 @@ Reproducible baseline for the [Solar Filament Segmentation Challenge 2026](https
 Pipeline:
 
 ```text
-audit data → create grouped folds → train/infer model → validate PQ
-→ choose confidence → create RLE submission → audit submission
+audit data → create grouped folds → train/infer model → tune confidence + instance cap on PQ
+→ create RLE submission → audit submission
 ```
 
 The included model is a small patch U-Net. Replace only the model command when testing another model.
@@ -43,17 +43,30 @@ DATA_ROOT=/path/to/MAGFiLO_1.0_Kaggle_2026
 
 python main.py \
   --data-root "$DATA_ROOT" \
-  --run-dir artifacts/runs/unet_pc \
+  --run-dir artifacts/runs/unet_pc_pq_v2 \
   --confidence-grid 0.20 0.25 0.30 0.35 0.40 0.50 \
+  --max-instances-grid 1 2 3 4 5 8 10 \
   --model-command 'python models/patch_unet.py \
     --train {train_manifest} --val {val_manifest} --test {test_manifest} \
     --raw-val {raw_val} --raw-test {raw_test} --run-dir {run_dir} \
+    --ground-truth {ground_truth} --validate-every 3 \
     --device auto --epochs 15 --samples-per-image 2 \
     --batch-size 8 --stride 512 --infer-batch 16 \
     --threshold 0.35 --min-area 80 --max-candidates 20'
 ```
 
 `--device auto` selects CUDA, Apple MPS, or CPU.
+
+Training uses reproducible fresh crops each epoch and samples filament centers from
+one foreground pixel. Every three epochs (and at the final epoch), the model evaluates
+full validation images against every independent annotator record. It selects the
+checkpoint and pixel threshold by mean PQ, using confidence 0.2 and at most 10 instances.
+`--threshold-grid` defaults to `0.2 0.3 0.35 0.4 0.5 0.6`; `--threshold` is also included.
+The controller then tunes instance confidence and cap for the selected model.
+Test inference runs once, using the selected checkpoint and pixel threshold.
+Validation increases runtime; `--validate-every` controls the frequency. Cached current
+and selected validation maps use about 4 GiB for 123 images. Keep the same fold for
+comparison with the existing baseline; use a new run directory to preserve it.
 
 ## 3. Run on Kaggle GPU
 
@@ -75,11 +88,13 @@ Run full pipeline:
 ```python
 !python main.py \
   --data-root /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026 \
-  --run-dir /kaggle/working/artifacts/runs/unet_kaggle \
+  --run-dir /kaggle/working/artifacts/runs/unet_pq_v2 \
   --confidence-grid 0.20 0.25 0.30 0.35 0.40 0.50 \
+  --max-instances-grid 1 2 3 4 5 8 10 \
   --model-command 'python models/patch_unet.py \
     --train {train_manifest} --val {val_manifest} --test {test_manifest} \
     --raw-val {raw_val} --raw-test {raw_test} --run-dir {run_dir} \
+    --ground-truth {ground_truth} --validate-every 3 \
     --device cuda --epochs 15 --samples-per-image 2 \
     --batch-size 8 --stride 512 --infer-batch 16 \
     --threshold 0.35 --min-area 80 --max-candidates 20'
@@ -90,7 +105,7 @@ Confirm log contains:
 ```text
 device=cuda
 DONE
-submission=/kaggle/working/artifacts/runs/unet_kaggle/submission.csv
+submission=/kaggle/working/artifacts/runs/unet_pq_v2/submission.csv
 ```
 
 ## 4. Check and submit
@@ -99,7 +114,7 @@ Run submission audit:
 
 ```python
 !python scripts/audit_submission.py \
-  --submission /kaggle/working/artifacts/runs/unet_kaggle/submission.csv \
+  --submission /kaggle/working/artifacts/runs/unet_pq_v2/submission.csv \
   --test-images /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026/test/test_images
 ```
 
@@ -112,7 +127,7 @@ submission=ok
 Upload this file on Kaggle:
 
 ```text
-/kaggle/working/artifacts/runs/unet_kaggle/submission.csv
+/kaggle/working/artifacts/runs/unet_pq_v2/submission.csv
 ```
 
 For a Kaggle Notebook, use **Save Version → Save & Run All** before submitting. For a classic competition, upload the CSV from the competition’s **Submit Predictions** page.
@@ -124,13 +139,19 @@ Each run is stored under its `--run-dir`:
 ```text
 run.json                 run configuration and Git commit
 state.json               current pipeline stage
-validation.csv           confidence/PQ sweep
-selected_confidence.json selected validation threshold
+validation.csv           confidence/PQ/instance-cap sweep
+validation_preview.csv   RLE preview for the selected validation settings
+selected_confidence.json selected validation threshold and instance cap
 submission.csv           final Kaggle file
-patch_unet.pt            trained checkpoint
+patch_unet.pt            checkpoint with best validation PQ
+selected_model.json      selected epoch, pixel threshold, and selection PQ
+checkpoint_metrics.json  epoch/pixel-threshold PQ sweep
+probabilities/val/*.npy   selected checkpoint validation probabilities (float32)
 ```
 
-Validation uses official-style Panoptic Quality with strict `IoU > 0.5` instance matching. PQ penalizes false positives, missed filaments, fragmentation, and over-merging; Dice is not the competition metric. See the [official evaluation details](https://www.kaggle.com/competitions/filament-segmentation-2026/overview/prizes).
+Validation uses the competition's updated Panoptic Quality (PQ) metric with strict `IoU > 0.5` one-to-one instance matching. PQ is `sum(matched IoU) / (TP + 0.5 FP + 0.5 FN)` and penalizes false positives, missed filaments, fragmentation, and over-merging. The pipeline tunes both confidence and the maximum number of instances on validation data. See the [official evaluation details](https://www.kaggle.com/competitions/filament-segmentation-2026/overview/leaderboard-ranking).
+
+The organizers report that the leaderboard was rescored on August 12, 2026. The organizers also evaluate reproducibility, segmentation quality, and the source repository. Do not use public test annotations or other ground-truth metadata for inference, even though community discussions report overlap between some test images and the public MAGFiLO release.
 
 ## Model interface
 

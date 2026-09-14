@@ -9,10 +9,11 @@ venv/
 .env
 *.env
 .kaggle/
+.kaggle-venv/
 
 # Generated runs, masks, checkpoints, predictions, and submissions.
 artifacts/
-outputs/
+output/
 models/*.pt
 models/*.pth
 *.ckpt

@@ -78,6 +78,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--confidence", type=float, default=0.20)
     p.add_argument("--min-area", type=int, default=16)
     p.add_argument("--max-instances", type=int, default=10)
+    p.add_argument("--max-instances-grid", type=int, nargs="+", default=[1, 2, 3, 4, 5, 8, 10],
+                   help="instance caps evaluated jointly with confidence on validation PQ")
     p.add_argument("--confidence-grid", type=float, nargs="+",
                    default=[0.10, 0.15, 0.20, 0.25, 0.30, 0.40, 0.50])
     p.add_argument("--model-command", help="shell-like command with placeholders; see README")
@@ -117,6 +119,7 @@ def main() -> None:
         "raw_test": raw_test,
         "run_dir": run_dir,
         "fold": args.fold,
+        "ground_truth": data_root / "train/MAGFiLO_1.0_Annotations_kaggle2026_train.json",
     }
 
     # 2. Model hook. Controller does not assume YOLO, U-Net, Torch, or framework.
@@ -133,27 +136,34 @@ def main() -> None:
     if not raw_val.exists() or not raw_test.exists():
         raise SystemExit(f"model must create both files: {raw_val}, {raw_test}")
 
-    # 3. Validation postprocess: calibrates confidence against official-style PQ.
-    val_csv = run_dir / "validation.csv"
+    # 3. Validation postprocess: calibrates confidence and instance cap against official PQ.
+    val_csv = run_dir / "validation_preview.csv"
+    validation_metrics = run_dir / "validation.csv"
     selected_confidence = run_dir / "selected_confidence.json"
     gt = data_root / "train/MAGFiLO_1.0_Annotations_kaggle2026_train.json"
     run([sys.executable, "scripts/postprocess.py", "--predictions", str(raw_val), "--output", str(val_csv),
          "--confidence-grid", *map(str, args.confidence_grid), "--max-instances", str(args.max_instances),
+         "--max-instances-grid", *map(str, args.max_instances_grid),
          "--min-area", str(args.min_area), "--ground-truth", str(gt),
          "--selected-confidence-file", str(selected_confidence),
+         "--metrics-output", str(validation_metrics),
          "--expected-manifest", str(manifests / f"val_fold{args.fold}.jsonl")], "validation PQ", env, state_path, progress)
-    calibrated_confidence = json.loads(selected_confidence.read_text())["confidence"]
+    selected = json.loads(selected_confidence.read_text())
+    calibrated_confidence = selected["confidence"]
+    calibrated_max_instances = selected["max_instances"]
     (run_dir / "metric.json").write_text(json.dumps({
         "protocol": "organizer_self_evaluation",
         "iou_match": ">0.5",
         "aggregation": "mean over annotator records",
         "confidence": calibrated_confidence,
+        "max_instances": calibrated_max_instances,
+        "metric": "panoptic_quality",
     }, indent=2) + "\n")
 
     # 4. Test postprocess: RLE, non-overlap, Kaggle column format.
     submission = run_dir / "submission.csv"
     run([sys.executable, "scripts/postprocess.py", "--predictions", str(raw_test), "--output", str(submission),
-         "--confidence", str(calibrated_confidence), "--max-instances", str(args.max_instances),
+         "--confidence", str(calibrated_confidence), "--max-instances", str(calibrated_max_instances),
          "--min-area", str(args.min_area), "--expected-manifest", str(manifests / "test.jsonl")], "test postprocess", env, state_path, progress)
 
     # 5. Final submission audit.
