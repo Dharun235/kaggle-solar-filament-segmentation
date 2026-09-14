@@ -59,6 +59,8 @@ python main.py \
 
 Create a Kaggle Notebook, attach the competition data, and select **GPU** under notebook settings. Run these cells separately.
 
+Reference notebook: [solar-fil Kaggle notebook, version 349781629](https://www.kaggle.com/code/dharun235/solar-fil?scriptVersionId=349781629).
+
 Clone repository:
 
 ```python
