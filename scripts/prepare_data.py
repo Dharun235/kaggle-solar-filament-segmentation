@@ -56,9 +56,15 @@ def main():
     jsonl_write(out / "train.jsonl", image_rows)
     jsonl_write(out / "test.jsonl", [{"image_id": p.stem, "physical_id": p.stem, "file_name": p.name,
                                       "path": str(p), "width": 2048, "height": 2048} for p in test_files])
+    # Inference needs one row per physical JPEG. Ground-truth evaluator still loads
+    # every annotator record directly from COCO JSON.
+    unique_by_physical = {}
+    for row in image_rows:
+        unique_by_physical.setdefault(row["physical_id"], row)
+    physical_rows = list(unique_by_physical.values())
     for fold in range(args.folds):
         jsonl_write(out / f"train_fold{fold}.jsonl", [r for r in image_rows if r["fold"] != fold])
-        jsonl_write(out / f"val_fold{fold}.jsonl", [r for r in image_rows if r["fold"] == fold])
+        jsonl_write(out / f"val_fold{fold}.jsonl", [r for r in physical_rows if r["fold"] == fold])
     if args.decode_masks:
         print("[3/3] decoding masks", flush=True)
         mask_root = Path("artifacts/masks")
