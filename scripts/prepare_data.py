@@ -22,6 +22,7 @@ def main():
     train = args.root / "train"
     test_images = args.root / "test/test_images"
     ann_path = train / "MAGFiLO_1.0_Annotations_kaggle2026_train.json"
+    print("[1/3] loading COCO annotations", flush=True)
     data = load_json(ann_path)
     image_dir = train / "train_images"
     files = {p.stem: p for p in image_dir.glob("*.jpeg")}
@@ -42,6 +43,7 @@ def main():
     month_folds = {month: i % args.folds for i, month in enumerate(months)}
     out = Path("artifacts/manifests")
     out.mkdir(parents=True, exist_ok=True)
+    print("[2/3] building grouped manifests", flush=True)
     image_rows = []
     for im in data["images"]:
         stem = physical_stem(im["file_name"])
@@ -57,6 +59,7 @@ def main():
         jsonl_write(out / f"train_fold{fold}.jsonl", [r for r in image_rows if r["fold"] != fold])
         jsonl_write(out / f"val_fold{fold}.jsonl", [r for r in image_rows if r["fold"] == fold])
     if args.decode_masks:
+        print("[3/3] decoding masks", flush=True)
         mask_root = Path("artifacts/masks")
         for row in image_rows:
             for i, ann in enumerate(row["annotations"]):

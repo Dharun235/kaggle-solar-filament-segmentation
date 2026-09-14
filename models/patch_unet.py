@@ -19,6 +19,7 @@ from PIL import Image
 from scipy import ndimage
 from torch import nn
 from torch.utils.data import DataLoader, Dataset
+from tqdm.auto import tqdm
 
 # Allow `python models/patch_unet.py ...` from controller.
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -117,7 +118,7 @@ def write_predictions(model, manifest, output, mask_root, device, threshold, min
     rows=[json.loads(x) for x in Path(manifest).read_text().splitlines() if x.strip()]
     Path(output).parent.mkdir(parents=True, exist_ok=True)
     with Path(output).open("w") as dst:
-        for row in rows:
+        for row in tqdm(rows, desc=f"inference {manifest.stem}", unit="image"):
             prob=predict_image(model, row["path"], device, stride, infer_batch)
             labels, n=ndimage.label(prob >= threshold, structure=np.ones((3,3)))
             candidates=[]
@@ -138,7 +139,10 @@ def main():
     model=UNet().to(device); opt=torch.optim.AdamW(model.parameters(),lr=2e-3,weight_decay=1e-4)
     for epoch in range(args.epochs):
         model.train(); total=0.
-        for x,y in loader: opt.zero_grad(); z=loss_fn(model(x.to(device, non_blocking=True)),y.to(device, non_blocking=True)); z.backward(); opt.step(); total += z.detach().item()
+        progress = tqdm(loader, desc=f"train epoch {epoch + 1}/{args.epochs}", unit="batch")
+        for x,y in progress:
+            opt.zero_grad(); z=loss_fn(model(x.to(device, non_blocking=True)),y.to(device, non_blocking=True)); z.backward(); opt.step(); total += z.detach().item()
+            progress.set_postfix(loss=f"{z.detach().item():.4f}")
         print(f"epoch={epoch+1}/{args.epochs} loss={total/max(len(loader),1):.4f}",flush=True)
     ckpt=args.run_dir/"patch_unet.pt"; ckpt.parent.mkdir(parents=True,exist_ok=True); torch.save(model.state_dict(),ckpt)
     model.eval(); write_predictions(model,args.val,args.raw_val,args.run_dir/"masks/val",device,args.threshold,args.min_area,args.max_candidates,args.stride,args.infer_batch); write_predictions(model,args.test,args.raw_test,args.run_dir/"masks/test",device,args.threshold,args.min_area,args.max_candidates,args.stride,args.infer_batch)
