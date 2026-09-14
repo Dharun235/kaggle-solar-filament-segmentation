@@ -16,6 +16,7 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
+from tqdm.auto import tqdm
 
 
 ROOT = Path(__file__).resolve().parent
@@ -33,12 +34,19 @@ def git_sha() -> str | None:
         return None
 
 
-def run(cmd: list[str], label: str, env: dict[str, str]) -> None:
+def run(cmd: list[str], label: str, env: dict[str, str], state_path: Path, progress) -> None:
+    state = {"stage": label, "status": "running", "started_at": utc_now()}
+    state_path.write_text(json.dumps(state, indent=2) + "\n")
     print(f"\n== {label} ==\n$ {shlex.join(cmd)}", flush=True)
     started = time.time()
     result = subprocess.run(cmd, cwd=ROOT, env=env)
     if result.returncode:
+        state["status"] = "failed"; state["finished_at"] = utc_now()
+        state_path.write_text(json.dumps(state, indent=2) + "\n")
         raise SystemExit(f"{label} failed, exit={result.returncode}")
+    state["status"] = "complete"; state["finished_at"] = utc_now()
+    state_path.write_text(json.dumps(state, indent=2) + "\n")
+    progress.update(1)
     print(f"{label}: OK ({time.time() - started:.1f}s)", flush=True)
 
 
@@ -87,15 +95,17 @@ def main() -> None:
     run_dir = args.run_dir.resolve()
     manifests = ROOT / "artifacts/manifests"
     run_dir.mkdir(parents=True, exist_ok=True)
+    state_path = run_dir / "state.json"
+    progress = tqdm(total=6, desc="overall pipeline", unit="stage", position=0)
     env = os.environ.copy()
     env["SOLAR_DATA_ROOT"] = str(data_root)
     env["SOLAR_RUN_DIR"] = str(run_dir)
     write_run_metadata(run_dir / "run.json", args, run_dir)
 
     # 1. Verify data and create leakage-safe train/val/test manifests.
-    run([sys.executable, "scripts/audit_data.py", "--root", str(data_root)], "data audit", env)
+    run([sys.executable, "scripts/audit_data.py", "--root", str(data_root)], "data audit", env, state_path, progress)
     run([sys.executable, "scripts/prepare_data.py", "--root", str(data_root), "--folds", str(args.folds)],
-        "manifest preparation", env)
+        "manifest preparation", env, state_path, progress)
 
     raw_val = (args.raw_val or run_dir / "raw_val.jsonl").resolve()
     raw_test = (args.raw_test or run_dir / "raw_test.jsonl").resolve()
@@ -111,8 +121,9 @@ def main() -> None:
 
     # 2. Model hook. Controller does not assume YOLO, U-Net, Torch, or framework.
     if args.model_command:
-        run(render_model_command(args.model_command, model_values), "model command", env)
+        run(render_model_command(args.model_command, model_values), "model command", env, state_path, progress)
     elif not raw_val.exists() or not raw_test.exists():
+        progress.close()
         print("\nPreparation complete. Model command missing.")
         print("Required placeholders: {train_manifest} {val_manifest} {test_manifest} {raw_val} {raw_test} {run_dir} {fold}")
         print("Example:")
@@ -130,7 +141,7 @@ def main() -> None:
          "--confidence-grid", *map(str, args.confidence_grid), "--max-instances", str(args.max_instances),
          "--min-area", str(args.min_area), "--ground-truth", str(gt),
          "--selected-confidence-file", str(selected_confidence),
-         "--expected-manifest", str(manifests / f"val_fold{args.fold}.jsonl")], "validation PQ", env)
+         "--expected-manifest", str(manifests / f"val_fold{args.fold}.jsonl")], "validation PQ", env, state_path, progress)
     calibrated_confidence = json.loads(selected_confidence.read_text())["confidence"]
     (run_dir / "metric.json").write_text(json.dumps({
         "protocol": "organizer_self_evaluation",
@@ -143,13 +154,14 @@ def main() -> None:
     submission = run_dir / "submission.csv"
     run([sys.executable, "scripts/postprocess.py", "--predictions", str(raw_test), "--output", str(submission),
          "--confidence", str(calibrated_confidence), "--max-instances", str(args.max_instances),
-         "--min-area", str(args.min_area), "--expected-manifest", str(manifests / "test.jsonl")], "test postprocess", env)
+         "--min-area", str(args.min_area), "--expected-manifest", str(manifests / "test.jsonl")], "test postprocess", env, state_path, progress)
 
     # 5. Final submission audit.
     if not args.skip_audit:
         run([sys.executable, "scripts/audit_submission.py", "--submission", str(submission),
              "--test-images", str(data_root / "test/test_images")],
-            "submission audit", env)
+            "submission audit", env, state_path, progress)
+    progress.close()
     print(f"\nDONE\nrun={run_dir}\nsubmission={submission}", flush=True)
 
 

@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import numpy as np
+from tqdm.auto import tqdm
 
 try:
     from .pipeline_lib import encode_mask, jsonl_read, load_json, physical_stem, read_mask, polygons_to_mask
@@ -97,7 +98,7 @@ def main():
     best = None
     for conf in grid:
         scores = []
-        for rec in records:
+        for rec in tqdm(records, desc=f"PQ threshold {conf:.2f}", unit="image", leave=False):
             kept = greedy_exclusive(rec.get("instances", []), conf, args.max_instances, args.min_area)
             stem = physical_stem(rec["image_id"])
             if gt is not None and stem in gt:
@@ -118,7 +119,7 @@ def main():
     with args.output.open("w", newline="") as f:
         writer = csv.writer(f); writer.writerow(["filament_id", "segmentation_rle"])
         rows = 0
-        for rec in records:
+        for rec in tqdm(records, desc="write RLE submission", unit="image"):
             kept = greedy_exclusive(rec.get("instances", []), conf, args.max_instances, args.min_area)
             for idx, (_, mask) in enumerate(kept, 1):
                 writer.writerow([f"{physical_stem(rec['image_id'])}_{idx}", encode_mask(mask)])

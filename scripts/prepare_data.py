@@ -5,6 +5,7 @@ import json
 import random
 from collections import defaultdict
 from pathlib import Path
+from tqdm.auto import tqdm
 
 try:
     from .pipeline_lib import load_json, physical_stem, polygons_to_mask, write_mask, jsonl_write
@@ -33,7 +34,7 @@ def main():
 
     # Group by physical JPEG, then month. Prevent duplicate annotator leakage.
     groups = defaultdict(list)
-    for im in data["images"]:
+    for im in tqdm(data["images"], desc="COCO image records", unit="image"):
         stem = physical_stem(im["file_name"])
         month = im.get("date_captured", stem[:6])[:7]
         groups[month].append(im)
