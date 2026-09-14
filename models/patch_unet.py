@@ -46,12 +46,19 @@ class PatchDataset(Dataset):
             self.rows = self.rows[:max_rows]
         self.patch, self.seed = patch, seed
         self.indices = [(i, j) for i in range(len(self.rows)) for j in range(samples_per_image)]
+        self._cached_row = None
+        self._cached_data = None
 
     def __len__(self): return len(self.indices)
 
     def __getitem__(self, index):
         row_i, repeat = self.indices[index]
-        image, mask = load_row(self.rows[row_i])
+        # Two samples per image are adjacent. Avoid rereading JPEG and rasterizing
+        # every polygon twice; this was starving CUDA during training.
+        if self._cached_row != row_i:
+            self._cached_row = row_i
+            self._cached_data = load_row(self.rows[row_i])
+        image, mask = self._cached_data
         rng = np.random.default_rng(self.seed + index * 1009 + repeat)
         ys, xs = np.nonzero(mask)
         if len(xs) and rng.random() < 0.75:
@@ -127,11 +134,11 @@ def write_predictions(model, manifest, output, mask_root, device, threshold, min
 def main():
     ap=argparse.ArgumentParser(); ap.add_argument("--train",type=Path,required=True); ap.add_argument("--val",type=Path,required=True); ap.add_argument("--test",type=Path,required=True); ap.add_argument("--raw-val",type=Path,required=True); ap.add_argument("--raw-test",type=Path,required=True); ap.add_argument("--run-dir",type=Path,required=True); ap.add_argument("--epochs",type=int,default=3); ap.add_argument("--batch-size",type=int,default=4); ap.add_argument("--samples-per-image",type=int,default=3); ap.add_argument("--max-train-rows",type=int); ap.add_argument("--device",default="auto"); ap.add_argument("--threshold",type=float,default=.35); ap.add_argument("--min-area",type=int,default=80); ap.add_argument("--max-candidates",type=int,default=20); ap.add_argument("--stride",type=int,default=256); ap.add_argument("--infer-batch",type=int,default=8); args=ap.parse_args()
     random.seed(42); np.random.seed(42); torch.manual_seed(42); device=device_for(args.device); print(f"device={device}")
-    ds=PatchDataset(args.train,samples_per_image=args.samples_per_image,max_rows=args.max_train_rows); loader=DataLoader(ds,batch_size=args.batch_size,shuffle=True,num_workers=0)
+    ds=PatchDataset(args.train,samples_per_image=args.samples_per_image,max_rows=args.max_train_rows); loader=DataLoader(ds,batch_size=args.batch_size,shuffle=True,num_workers=0,pin_memory=(device.type == "cuda"))
     model=UNet().to(device); opt=torch.optim.AdamW(model.parameters(),lr=2e-3,weight_decay=1e-4)
     for epoch in range(args.epochs):
         model.train(); total=0.
-        for x,y in loader: opt.zero_grad(); z=loss_fn(model(x.to(device)),y.to(device)); z.backward(); opt.step(); total += z.detach().item()
+        for x,y in loader: opt.zero_grad(); z=loss_fn(model(x.to(device, non_blocking=True)),y.to(device, non_blocking=True)); z.backward(); opt.step(); total += z.detach().item()
         print(f"epoch={epoch+1}/{args.epochs} loss={total/max(len(loader),1):.4f}",flush=True)
     ckpt=args.run_dir/"patch_unet.pt"; ckpt.parent.mkdir(parents=True,exist_ok=True); torch.save(model.state_dict(),ckpt)
     model.eval(); write_predictions(model,args.val,args.raw_val,args.run_dir/"masks/val",device,args.threshold,args.min_area,args.max_candidates,args.stride,args.infer_batch); write_predictions(model,args.test,args.raw_test,args.run_dir/"masks/test",device,args.threshold,args.min_area,args.max_candidates,args.stride,args.infer_batch)
