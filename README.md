@@ -25,6 +25,17 @@ MAGFiLO_1.0_Kaggle_2026/
 
 Do not commit competition data, test labels, checkpoints, or submissions. Do not use public datasets containing competition test labels. This avoids leakage and follows the competition rules.
 
+## Validated inference configuration
+
+The saved checkpoint from Kaggle version 349911418 achieved validation PQ **0.1709468443**
+with 512px tiles, **stride 256**, **maximum probability blending**, pixel threshold **0.4**,
+confidence **0.2**, minimum component area **80**, and maximum **4 instances per image**.
+Use those settings when reusing that checkpoint. The training commands below select a
+new checkpoint and retune thresholds/caps on validation, so their selected values may differ.
+
+Ordinary/weighted averaging, morphological closing, and probability-guided growth did
+not beat this baseline and are not enabled. See [validation experiments](reports/validation_experiments.md).
+
 ## 2. Run on your own PC
 
 From repository root:
@@ -43,16 +54,16 @@ DATA_ROOT=/path/to/MAGFiLO_1.0_Kaggle_2026
 
 python main.py \
   --data-root "$DATA_ROOT" \
-  --run-dir artifacts/runs/unet_pc_pq_v2 \
+  --run-dir artifacts/runs/unet_pc_pq_v3 \
   --confidence-grid 0.20 0.25 0.30 0.35 0.40 0.50 \
   --max-instances-grid 1 2 3 4 5 8 10 \
   --model-command 'python models/patch_unet.py \
     --train {train_manifest} --val {val_manifest} --test {test_manifest} \
     --raw-val {raw_val} --raw-test {raw_test} --run-dir {run_dir} \
-    --ground-truth {ground_truth} --validate-every 3 \
+    --ground-truth {ground_truth} --validate-every 3 --selection-max-instances 4 \
     --device auto --epochs 15 --samples-per-image 2 \
-    --batch-size 8 --stride 512 --infer-batch 16 \
-    --threshold 0.35 --min-area 80 --max-candidates 20'
+    --batch-size 8 --stride 256 --infer-batch 16 \
+    --threshold 0.4 --min-area 80 --max-candidates 20'
 ```
 
 `--device auto` selects CUDA, Apple MPS, or CPU.
@@ -60,7 +71,7 @@ python main.py \
 Training uses reproducible fresh crops each epoch and samples filament centers from
 one foreground pixel. Every three epochs (and at the final epoch), the model evaluates
 full validation images against every independent annotator record. It selects the
-checkpoint and pixel threshold by mean PQ, using confidence 0.2 and at most 10 instances.
+checkpoint and pixel threshold by mean PQ, using confidence 0.2 and at most 4 instances.
 `--threshold-grid` defaults to `0.2 0.3 0.35 0.4 0.5 0.6`; `--threshold` is also included.
 The controller then tunes instance confidence and cap for the selected model.
 Test inference runs once, using the selected checkpoint and pixel threshold.
@@ -72,7 +83,7 @@ comparison with the existing baseline; use a new run directory to preserve it.
 
 Create a Kaggle Notebook, attach the competition data, and select **GPU** under notebook settings. Run these cells separately.
 
-Reference notebook: [solar-fil Kaggle notebook, version 349781629](https://www.kaggle.com/code/dharun235/solar-fil?scriptVersionId=349781629).
+The maintained notebook is [notebooks/solar-fil.ipynb](notebooks/solar-fil.ipynb). It checks out GitHub main and records the resolved commit in the run metadata. Import it into Kaggle to use the updated configuration.
 
 Clone repository:
 
@@ -88,16 +99,16 @@ Run full pipeline:
 ```python
 !python main.py \
   --data-root /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026 \
-  --run-dir /kaggle/working/artifacts/runs/unet_pq_v2 \
+  --run-dir /kaggle/working/artifacts/runs/unet_pq_v3 \
   --confidence-grid 0.20 0.25 0.30 0.35 0.40 0.50 \
   --max-instances-grid 1 2 3 4 5 8 10 \
   --model-command 'python models/patch_unet.py \
     --train {train_manifest} --val {val_manifest} --test {test_manifest} \
     --raw-val {raw_val} --raw-test {raw_test} --run-dir {run_dir} \
-    --ground-truth {ground_truth} --validate-every 3 \
+    --ground-truth {ground_truth} --validate-every 3 --selection-max-instances 4 \
     --device cuda --epochs 15 --samples-per-image 2 \
-    --batch-size 8 --stride 512 --infer-batch 16 \
-    --threshold 0.35 --min-area 80 --max-candidates 20'
+    --batch-size 8 --stride 256 --infer-batch 16 \
+    --threshold 0.4 --min-area 80 --max-candidates 20'
 ```
 
 Confirm log contains:
@@ -105,7 +116,7 @@ Confirm log contains:
 ```text
 device=cuda
 DONE
-submission=/kaggle/working/artifacts/runs/unet_pq_v2/submission.csv
+submission=/kaggle/working/artifacts/runs/unet_pq_v3/submission.csv
 ```
 
 ## 4. Check and submit
@@ -114,7 +125,7 @@ Run submission audit:
 
 ```python
 !python scripts/audit_submission.py \
-  --submission /kaggle/working/artifacts/runs/unet_pq_v2/submission.csv \
+  --submission /kaggle/working/artifacts/runs/unet_pq_v3/submission.csv \
   --test-images /kaggle/input/competitions/filament-segmentation-2026/MAGFiLO_1.0_Kaggle_2026/test/test_images
 ```
 
@@ -127,7 +138,7 @@ submission=ok
 Upload this file on Kaggle:
 
 ```text
-/kaggle/working/artifacts/runs/unet_pq_v2/submission.csv
+/kaggle/working/artifacts/runs/unet_pq_v3/submission.csv
 ```
 
 For a Kaggle Notebook, use **Save Version → Save & Run All** before submitting. For a classic competition, upload the CSV from the competition’s **Submit Predictions** page.
