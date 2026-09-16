@@ -1,6 +1,6 @@
 # Maintained YOLO instance segmentation pipeline
 
-Pretrained YOLOv8-S segmentation, 2048px inputs, batch1, 30 epochs, AdamW,
+Pretrained YOLO11m-seg segmentation, 2048px inputs, batch1, 30 epochs, AdamW,
 full-resolution output masks, training mask_ratio2. No mosaic or copy-paste.
 Ultralytics version: 8.4.152. Model size is chosen for T4 memory at native input resolution.
 

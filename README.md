@@ -1,10 +1,10 @@
 # Solar Filament Segmentation
 
-Maintained solution for the Kaggle Solar Filament Segmentation Challenge 2026. The repository now contains one production pipeline: pretrained YOLOv8-S instance segmentation with COCO-consistent polygon-mask rasterization.
+Maintained solution for the Kaggle Solar Filament Segmentation Challenge 2026. The repository now contains one controlled upgrade experiment: pretrained YOLO11m-seg instance segmentation with COCO-consistent polygon-mask rasterization.
 
 ## Result
 
-The maintained COCO-mask pipeline reached validation PQ **0.41944** on the leakage-safe month-grouped fold (584 training photos, 123 validation photos, 197 annotator records). The previous YOLO preprocessing scored 0.40121; disk-intensity normalization scored 0.38818 and was removed. The best confirmed public score before the COCO submission was 0.34; the COCO submission is pending.
+The previous YOLOv8-S COCO-mask pipeline reached validation PQ **0.41944** on the leakage-safe month-grouped fold (584 training photos, 123 validation photos, 197 annotator records) and public score **0.36**. The current experiment changes only the detector to YOLO11m-seg; its validation and public scores are not yet known. Disk-intensity normalization scored 0.38818 and was removed.
 
 ## Run
 
