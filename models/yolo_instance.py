@@ -1,6 +1,6 @@
 """Grouped-fold YOLOv8 instance segmentation; independent of the U-Net pipeline."""
 from __future__ import annotations
-import argparse,csv,json,random,sys,hashlib
+import argparse,csv,json,random,sys,hashlib,shutil
 from collections import defaultdict
 from pathlib import Path
 import numpy as np
@@ -82,6 +82,13 @@ def prediction(model,path):
     return masks,r.boxes.conf.cpu().numpy()
 
 
+def retain_periodic_checkpoint(trainer):
+    """Keep every fifth completed epoch for subsequent full-fold PQ selection."""
+    epoch=trainer.epoch+1
+    if epoch%5==0:
+        shutil.copyfile(trainer.last,Path(trainer.wdir)/f'pq_epoch{epoch:03d}.pt')
+
+
 def main():
     ap=argparse.ArgumentParser();ap.add_argument('--data-root',type=Path,required=True);ap.add_argument('--run-dir',type=Path,required=True);ap.add_argument('--prepare-only',action='store_true');args=ap.parse_args()
     out=args.run_dir.resolve();out.mkdir(parents=True,exist_ok=True)
@@ -96,17 +103,28 @@ def main():
     (out/'config.json').write_text(json.dumps(cfg,indent=2))
     status('training',epochs=cfg['epochs'])
     model=YOLO(cfg.pop('model'))
+    model.add_callback('on_model_save',retain_periodic_checkpoint)
     model.train(data=str(dataset),project=str(out),name='train',exist_ok=False,**cfg)
     del model
     torch.cuda.empty_cache()
-    candidates=[out/'train/weights/best.pt',out/'train/weights/last.pt']
+    candidates=sorted((out/'train/weights').glob('pq_epoch*.pt'))+[out/'train/weights/best.pt',out/'train/weights/last.pt']
     grid=[(c,k) for c in [.1,.2,.3,.4,.5] for k in [4,8,16,100]]
-    trials=[]
+    trials=[];record_keys=[];per_record={}
+    for im in val:
+        stem=physical_stem(im['file_name'])
+        record_keys.extend((stem,rec['id']) for rec in records[stem])
+    prediction_dir=out/'validation_predictions';prediction_dir.mkdir(exist_ok=True)
     for checkpoint in candidates:
         model=YOLO(str(checkpoint));values={key:[] for key in grid}
+        checkpoint_predictions=[]
         for n,im in enumerate(val,1):
             stem=physical_stem(im['file_name'])
             masks,scores=prediction(model,args.data_root/'train/train_images'/im['file_name'])
+            instances=[]
+            for mask,score in zip(masks,scores):
+                rle=mu.encode(np.asfortranarray(mask,dtype=np.uint8))
+                instances.append(dict(score=float(score),rle=dict(size=rle['size'],counts=rle['counts'].decode('ascii'))))
+            checkpoint_predictions.append(dict(image_id=stem,instances=instances))
             truth=[[mu.merge(mu.frPyObjects(a['segmentation'],2048,2048)) for a in anns[rec['id']]] for rec in records[stem]]
             for conf,cap in grid:
                 pred=exclusive_rles(masks,scores,conf,cap)
@@ -114,10 +132,19 @@ def main():
             status('validation',checkpoint=checkpoint.name,images_done=n,images_total=len(val))
             print(f'{checkpoint.name} validation {n}/{len(val)}',flush=True)
         for (conf,cap),pq in values.items():trials.append(dict(checkpoint=str(checkpoint),confidence=conf,max_instances=cap,pq=float(np.mean(pq))))
+        per_record[str(checkpoint)]=values
+        with (prediction_dir/f'{checkpoint.stem}.jsonl').open('w') as f:
+            for row in checkpoint_predictions:f.write(json.dumps(row)+'\n')
+        (out/'validation_grid.json').write_text(json.dumps(trials,indent=2))
         del model
         torch.cuda.empty_cache()
     (out/'validation_grid.json').write_text(json.dumps(trials,indent=2))
     selected=max(trials,key=lambda r:r['pq']);selected['checkpoint_sha256']=hashlib.sha256(Path(selected['checkpoint']).read_bytes()).hexdigest()
+    selected['validation_predictions']=str(prediction_dir/f"{Path(selected['checkpoint']).stem}.jsonl")
+    with (out/'validation.csv').open('w',newline='') as f:
+        writer=csv.writer(f);writer.writerow(['image_id','annotation_record_id','pq'])
+        for (stem,record_id),pq in zip(record_keys,per_record[selected['checkpoint']][(selected['confidence'],selected['max_instances'])]):
+            writer.writerow([stem,record_id,pq])
     (out/'selected.json').write_text(json.dumps(selected,indent=2));print('SELECTED',selected,flush=True)
     model=YOLO(selected['checkpoint'])
     images=sorted((args.data_root/'test/test_images').glob('*.jpeg'))

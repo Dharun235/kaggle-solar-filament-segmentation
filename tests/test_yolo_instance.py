@@ -1,9 +1,24 @@
 import unittest
+import tempfile
+from pathlib import Path
+from types import SimpleNamespace
 import numpy as np
 from pycocotools import mask as mu
-from models.yolo_instance import polygon_line,exclusive_rles,split_records
+from models.yolo_instance import polygon_line,exclusive_rles,split_records,retain_periodic_checkpoint
 
 class InstanceTests(unittest.TestCase):
+    def test_periodic_checkpoint_preserves_completed_epoch(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            directory=Path(tmp);last=directory/'last.pt';last.write_bytes(b'epoch4')
+            trainer=SimpleNamespace(epoch=3,last=last,wdir=directory)
+            retain_periodic_checkpoint(trainer)
+            self.assertEqual(list(directory.glob('pq_epoch*.pt')),[])
+            trainer.epoch=4;last.write_bytes(b'epoch5')
+            retain_periodic_checkpoint(trainer)
+            last.write_bytes(b'epoch6');trainer.epoch=5
+            retain_periodic_checkpoint(trainer)
+            self.assertEqual((directory/'pq_epoch005.pt').read_bytes(),b'epoch5')
+
     def test_polygon_coordinates_and_single_class(self):
         self.assertEqual(polygon_line({'segmentation':[[0,0,20,0,20,10]]},20,10),'0 0.000000000 0.000000000 1.000000000 0.000000000 1.000000000 1.000000000')
         with self.assertRaises(ValueError):polygon_line({'segmentation':[[0,0,1,0,1,1],[2,2,3,2,3,3]]},20,10)
