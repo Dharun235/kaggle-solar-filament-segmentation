@@ -319,3 +319,29 @@ Paths and SHA256 checksums recorded during cleanup:
 - `output/submission_yolo.csv` — `5fde2b858dfcf7ed12efa6074f8aaaef63e0ebebfdd961a90b01ac8881897763`
 
 - `output/yolo_results/yolo_instance/submission.csv` — `5fde2b858dfcf7ed12efa6074f8aaaef63e0ebebfdd961a90b01ac8881897763`
+
+## Completed periodic-checkpoint baseline
+
+Kaggle status verified COMPLETE. Expanded checkpoint selection did not improve PQ:
+best.pt again scored0.4012144075536765 (confidence0.2,cap16). Best PQ by retained
+epoch:5=0.338164,10=0.363932,15=0.376232,20=0.376930,25=0.400665,30=0.401080.
+The run produced1,209 submission masks across175/180 photos with zero overlap.
+This confirms no validation gain from the expanded checkpoint search in this run.
+The data-pipeline ablation notebook remains RUNNING; its output endpoint exposed
+no intermediate files, so its active stage/epoch is not confirmed.
+
+
+## Data-pipeline ablation results
+
+The separate Kaggle session completed both experiments. COCO-consistent polygon
+rasterization selected `pq_epoch030.pt` at confidence0.3/cap16 and reached PQ
+**0.41944395558748176**, versus the original YOLO baseline0.4012144075536765
+(+0.01823, +4.5% relative). Disk median/p16-p84 normalization selected the same
+checkpoint family at confidence0.3/cap16 and reached **0.38817706794199724**
+(-0.01304). Thus the mask-target convention is supported by this ablation;
+Anthony-style normalization is rejected for this recipe. The COCO run produced
+1,009 masks across174/180 test photos; disk produced1,057 masks across174/180,
+both with zero overlap. Files were downloaded locally under
+`output/yolo_data_ablation_final/yolo_data_ablation/{coco,disk}/submission.csv`.
+These are not submitted yet. The gain is validation-only until a public submission
+is explicitly authorized.
