@@ -34,7 +34,8 @@ Use those settings when reusing that checkpoint. The training commands below sel
 new checkpoint and retune thresholds/caps on validation, so their selected values may differ.
 
 Ordinary/weighted averaging, morphological closing, and probability-guided growth did
-not beat this baseline and are not enabled. See [validation experiments](reports/validation_experiments.md).
+not beat this baseline and are not enabled. See [lessons and experiments](reports/lessons_and_experiments.md)
+for the complete U-Net → U-Net++ → YOLO history, community findings and results.
 
 ## 2. Run on your own PC
 
