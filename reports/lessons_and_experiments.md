@@ -254,28 +254,19 @@ the currently running periodic-checkpoint experiment still uses the original dat
 
 ## Data-pipeline ablations implemented — 2026-09-16
 
-`models/yolo_data_pipeline.py` adds two independent variants selected through
-`models/yolo_instance.py --data-pipeline`:
+`models/yolo_data_pipeline.py` now contains the maintained COCO-mask variant,
+selected through `models/yolo_instance.py --data-pipeline coco`:
 
 - `coco`: rasterize the geometrically augmented instance polygons using COCO instead
   of OpenCV. Retain the baseline mask_ratio2 and resize operation to isolate the
   rasterizer. Instances remain separate; this does not yet test full-resolution targets.
-- `disk`: retain baseline YOLO masks, but normalize input by solar-disk median and
-  p84-p16 spread. Statistics come from the original image before augmentation, as
-  in Anthony's pipeline. Apply the same normalization in training, built-in validation,
-  final PQ inference and test inference. Preserve three input channels for YOLO.
+It retains30 epochs,2048 input, original grouped fold, seed42, separate annotator
+records, baseline augmentations and periodic PQ checkpoint selection. It does not
+merge annotators or apply the community central crop. Saved selected.json and
+data_pipeline.json identify preprocessing needed to reuse the checkpoint.
 
-Both retain30 epochs,2048 input, original grouped fold, seed42, separate annotator
-records, baseline augmentations and periodic PQ checkpoint selection. Neither
-merges annotators nor applies the community central crop. Saved selected.json and
- data_pipeline.json identify preprocessing needed to reuse each checkpoint.
-
-Notebook `dharun235/solar-fil-yolo-data-ablation` runs `coco`, then `disk`, in separate
-subprocesses and output directories; compare against the periodic-checkpoint baseline.
-Each saves validation.csv, raw masks, selected settings and submission.csv.
-The notebook writes comparison.json after each completed experiment. There is no
-automatic competition submission. Expected duration is roughly8–10 hours for both,
-based on prior training runtime; actual runtime may differ.
+The disk-normalization variant was tested and rejected (PQ0.388177). Its code and
+ablation notebook were removed. The maintained notebook is `notebooks/yolo_instance`.
 
 Validation before launch:12 tests passed; synthetic one-epoch CPU training, validation,
 checkpoint save/reload completed for both custom trainers. Tests check exact native
@@ -327,8 +318,8 @@ best.pt again scored0.4012144075536765 (confidence0.2,cap16). Best PQ by retaine
 epoch:5=0.338164,10=0.363932,15=0.376232,20=0.376930,25=0.400665,30=0.401080.
 The run produced1,209 submission masks across175/180 photos with zero overlap.
 This confirms no validation gain from the expanded checkpoint search in this run.
-The data-pipeline ablation notebook remains RUNNING; its output endpoint exposed
-no intermediate files, so its active stage/epoch is not confirmed.
+The data-pipeline ablation completed; its COCO result was retained and its disk result
+was rejected. The main maintained notebook now runs the COCO variant.
 
 
 ## Data-pipeline ablation results

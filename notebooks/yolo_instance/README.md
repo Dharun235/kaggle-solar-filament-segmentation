@@ -1,10 +1,10 @@
-# YOLO instance segmentation experiment
+# Maintained YOLO instance segmentation pipeline
 
 Pretrained YOLOv8-S segmentation, 2048px inputs, batch1, 30 epochs, AdamW,
 full-resolution output masks, training mask_ratio2. No mosaic or copy-paste.
 Ultralytics version: 8.4.152. Model size is chosen for T4 memory at native input resolution.
 
-Uses the same month-grouped fold0 as the baseline:584 training photos (957 separate
+Uses the same month-grouped fold0:584 training photos (957 separate
 annotator samples),123 validation photos (197 annotator records). Training retains
 individual filament polygons as one class. Different annotator records are separate
 samples rather than duplicate objects in one image. YOLO's built-in mAP uses one
@@ -14,7 +14,8 @@ Retains checkpoints after epochs 5, 10, 15, 20, 25 and 30. After training, compa
 all retained checkpoints plus best-by-YOLO-mAP and final checkpoints using native-resolution PQ with
 confidence .1/.2/.3/.4/.5 and caps4/8/16/100. Removes overlaps in descending detection
 confidence order and drops masks smaller than80 pixels after exclusion. Uses boxes.conf,
-not boxes.cls, for scores. The baseline cap4 is only one candidate, not imposed on YOLO.
+not boxes.cls, for scores. COCO-consistent polygon rasterization is the maintained
+data pipeline and produced validation PQ0.419444.
 
 Checkpoint selection uses all 197 annotator records on the same 123 held-out photos.
 It runs after training to avoid loading an extra model alongside the training model.

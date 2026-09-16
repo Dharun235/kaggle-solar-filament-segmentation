@@ -74,11 +74,8 @@ def exclusive_rles(masks,scores,confidence,cap,min_area=80):
     return result
 
 
-def prediction(model,path,data_pipeline='baseline'):
+def prediction(model,path,data_pipeline='coco'):
     extra={}
-    if data_pipeline=='disk':
-        from models.yolo_data_pipeline import DiskPredictor
-        extra['predictor']=DiskPredictor
     r=model.predict(str(path),imgsz=2048,conf=.1,iou=.7,max_det=100,retina_masks=True,device=0,verbose=False,**extra)[0]
     if r.masks is None:return np.zeros((0,*r.orig_shape),bool),np.zeros(0)
     masks=r.masks.data.cpu().numpy()>.5
@@ -94,7 +91,7 @@ def retain_periodic_checkpoint(trainer):
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--data-root',type=Path,required=True);ap.add_argument('--run-dir',type=Path,required=True);ap.add_argument('--prepare-only',action='store_true');ap.add_argument('--data-pipeline',choices=['baseline','coco','disk'],default='baseline');args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--data-root',type=Path,required=True);ap.add_argument('--run-dir',type=Path,required=True);ap.add_argument('--prepare-only',action='store_true');ap.add_argument('--data-pipeline',choices=['coco'],default='coco');args=ap.parse_args()
     out=args.run_dir.resolve();out.mkdir(parents=True,exist_ok=True)
     def status(stage,**kw):(out/'status.json').write_text(json.dumps(dict(stage=stage,**kw),indent=2))
     status('preparing')
@@ -104,7 +101,7 @@ def main():
     import ultralytics
     from ultralytics import YOLO
     if ultralytics.__version__!='8.4.152':raise RuntimeError('Data pipeline requires ultralytics==8.4.152')
-    (out/'data_pipeline.json').write_text(json.dumps(dict(variant=args.data_pipeline,mask_ratio=2,annotation_policy='separate annotator records',normalization='disk median/p16-p84 before augmentation' if args.data_pipeline=='disk' else 'standard /255'),indent=2))
+    (out/'data_pipeline.json').write_text(json.dumps(dict(variant='coco',mask_ratio=2,annotation_policy='separate annotator records',normalization='standard /255'),indent=2))
     assert torch.cuda.is_available(),'GPU required'
     cfg=dict(model='yolov8s-seg.pt',epochs=30,imgsz=2048,batch=1,device=0,workers=2,seed=42,deterministic=True,optimizer='AdamW',lr0=.001,cos_lr=True,patience=30,amp=True,mask_ratio=2,overlap_mask=False,mosaic=0.,mixup=0.,copy_paste=0.,hsv_h=0.,hsv_s=0.,hsv_v=.1,fliplr=.5,flipud=.5,scale=.1,translate=.05,plots=False,cache=False)
     (out/'config.json').write_text(json.dumps(cfg,indent=2))
@@ -112,9 +109,8 @@ def main():
     model=YOLO(cfg.pop('model'))
     model.add_callback('on_model_save',retain_periodic_checkpoint)
     extra={}
-    if args.data_pipeline!='baseline':
-        from models.yolo_data_pipeline import CocoTrainer,DiskTrainer
-        extra['trainer']=CocoTrainer if args.data_pipeline=='coco' else DiskTrainer
+    from models.yolo_data_pipeline import CocoTrainer
+    extra['trainer']=CocoTrainer
     model.train(data=str(dataset),project=str(out),name='train',exist_ok=False,**cfg,**extra)
     del model
     torch.cuda.empty_cache()
