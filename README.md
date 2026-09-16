@@ -24,7 +24,6 @@ The local entry point is `models/yolo_instance.py`. It requires the competition 
 - `scripts/postprocess.py`: PQ scoring and exclusive mask postprocessing.
 - `scripts/audit_submission.py`: submission validation.
 - `notebooks/yolo_instance/`: maintained Kaggle GPU notebook.
-- `tests/`: metric, postprocessing and data-pipeline tests.
 - `reports/lessons_and_experiments.md`: complete history, community lessons, tested methods and measured results.
 
 Generated outputs, checkpoints, local environments and competition submissions are intentionally not tracked.
