@@ -74,8 +74,12 @@ def exclusive_rles(masks,scores,confidence,cap,min_area=80):
     return result
 
 
-def prediction(model,path):
-    r=model.predict(str(path),imgsz=2048,conf=.1,iou=.7,max_det=100,retina_masks=True,device=0,verbose=False)[0]
+def prediction(model,path,data_pipeline='baseline'):
+    extra={}
+    if data_pipeline=='disk':
+        from models.yolo_data_pipeline import DiskPredictor
+        extra['predictor']=DiskPredictor
+    r=model.predict(str(path),imgsz=2048,conf=.1,iou=.7,max_det=100,retina_masks=True,device=0,verbose=False,**extra)[0]
     if r.masks is None:return np.zeros((0,*r.orig_shape),bool),np.zeros(0)
     masks=r.masks.data.cpu().numpy()>.5
     if masks.shape[1:]!=tuple(r.orig_shape):raise ValueError('Expected native-resolution masks')
@@ -90,21 +94,28 @@ def retain_periodic_checkpoint(trainer):
 
 
 def main():
-    ap=argparse.ArgumentParser();ap.add_argument('--data-root',type=Path,required=True);ap.add_argument('--run-dir',type=Path,required=True);ap.add_argument('--prepare-only',action='store_true');args=ap.parse_args()
+    ap=argparse.ArgumentParser();ap.add_argument('--data-root',type=Path,required=True);ap.add_argument('--run-dir',type=Path,required=True);ap.add_argument('--prepare-only',action='store_true');ap.add_argument('--data-pipeline',choices=['baseline','coco','disk'],default='baseline');args=ap.parse_args()
     out=args.run_dir.resolve();out.mkdir(parents=True,exist_ok=True)
     def status(stage,**kw):(out/'status.json').write_text(json.dumps(dict(stage=stage,**kw),indent=2))
     status('preparing')
     dataset,val,records,anns=prepare(args.data_root,out)
     if args.prepare_only:return
     import torch
+    import ultralytics
     from ultralytics import YOLO
+    if ultralytics.__version__!='8.4.152':raise RuntimeError('Data pipeline requires ultralytics==8.4.152')
+    (out/'data_pipeline.json').write_text(json.dumps(dict(variant=args.data_pipeline,mask_ratio=2,annotation_policy='separate annotator records',normalization='disk median/p16-p84 before augmentation' if args.data_pipeline=='disk' else 'standard /255'),indent=2))
     assert torch.cuda.is_available(),'GPU required'
     cfg=dict(model='yolov8s-seg.pt',epochs=30,imgsz=2048,batch=1,device=0,workers=2,seed=42,deterministic=True,optimizer='AdamW',lr0=.001,cos_lr=True,patience=30,amp=True,mask_ratio=2,overlap_mask=False,mosaic=0.,mixup=0.,copy_paste=0.,hsv_h=0.,hsv_s=0.,hsv_v=.1,fliplr=.5,flipud=.5,scale=.1,translate=.05,plots=False,cache=False)
     (out/'config.json').write_text(json.dumps(cfg,indent=2))
     status('training',epochs=cfg['epochs'])
     model=YOLO(cfg.pop('model'))
     model.add_callback('on_model_save',retain_periodic_checkpoint)
-    model.train(data=str(dataset),project=str(out),name='train',exist_ok=False,**cfg)
+    extra={}
+    if args.data_pipeline!='baseline':
+        from models.yolo_data_pipeline import CocoTrainer,DiskTrainer
+        extra['trainer']=CocoTrainer if args.data_pipeline=='coco' else DiskTrainer
+    model.train(data=str(dataset),project=str(out),name='train',exist_ok=False,**cfg,**extra)
     del model
     torch.cuda.empty_cache()
     candidates=sorted((out/'train/weights').glob('pq_epoch*.pt'))+[out/'train/weights/best.pt',out/'train/weights/last.pt']
@@ -119,7 +130,7 @@ def main():
         checkpoint_predictions=[]
         for n,im in enumerate(val,1):
             stem=physical_stem(im['file_name'])
-            masks,scores=prediction(model,args.data_root/'train/train_images'/im['file_name'])
+            masks,scores=prediction(model,args.data_root/'train/train_images'/im['file_name'],args.data_pipeline)
             instances=[]
             for mask,score in zip(masks,scores):
                 rle=mu.encode(np.asfortranarray(mask,dtype=np.uint8))
@@ -140,6 +151,7 @@ def main():
         torch.cuda.empty_cache()
     (out/'validation_grid.json').write_text(json.dumps(trials,indent=2))
     selected=max(trials,key=lambda r:r['pq']);selected['checkpoint_sha256']=hashlib.sha256(Path(selected['checkpoint']).read_bytes()).hexdigest()
+    selected['data_pipeline']=args.data_pipeline
     selected['validation_predictions']=str(prediction_dir/f"{Path(selected['checkpoint']).stem}.jsonl")
     with (out/'validation.csv').open('w',newline='') as f:
         writer=csv.writer(f);writer.writerow(['image_id','annotation_record_id','pq'])
@@ -153,7 +165,7 @@ def main():
     with (out/'submission.csv').open('w',newline='') as f:
         writer=csv.writer(f);writer.writerow(['filament_id','segmentation_rle'])
         for n,path in enumerate(images,1):
-            masks,scores=prediction(model,path)
+            masks,scores=prediction(model,path,args.data_pipeline)
             pred=exclusive_rles(masks,scores,selected['confidence'],selected['max_instances'])
             occ=np.zeros((2048,2048),bool)
             for i,rle in enumerate(pred,1):

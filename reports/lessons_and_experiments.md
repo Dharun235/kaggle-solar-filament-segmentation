@@ -27,7 +27,7 @@ not a fresh leaderboard check.
 | Custom U-Net, stride512, version349911418 | 0.140628; retuned 0.143089 | 0.12 | Small one-channel network trained from scratch |
 | Same U-Net weights, stride256/max blending | 0.170947 | Not submitted | Better overlapping inference |
 | Community U-Net++ EfficientNet-B3, original split | 0.274272 on source split | 0.23 | Annotation-level split allowed shared photos across train/validation |
-| U-Net++ EfficientNet-B3, grouped fold0 | 0.330773 | Not verified here | Same training recipe, leakage-safe split; version350156671 |
+| U-Net++ EfficientNet-B3, grouped fold0 | 0.330773 | 0.27 | Same training recipe, leakage-safe split; version350156671 |
 | YOLOv8-S instance segmentation, grouped fold0 | **0.401214** | **0.34** | Best confirmed model so far |
 
 The previous community U-Net++ scored 0.286305 on 101 annotator records whose
@@ -173,11 +173,115 @@ retain epochs5/10/15/20/25/30, then compare these plus mAP-best and final checkp
 using full-fold PQ after training. Save raw validation masks/confidences and selected
 per-record validation.csv. This fixes the mismatch between training's one-annotator
 box/mask mAP and all-annotator PQ selection; no improvement has yet been established.
-Last verified remote state was RUNNING. No automatic competition submission.
+Latest status check on2026-09-16 still reports RUNNING; the current epoch was not available from the status endpoint. No automatic competition submission.
 
 Potential future experiment, not yet tried: crop-based inference combined with
 whole-image predictions to improve small-object recall, with explicit duplicate
 handling and full-fold validation. Avoid changing many factors simultaneously.
+
+## Data-processing audit — 2026-09-16
+
+Inspected community notebook source, our data preparation, and the installed
+Ultralytics8.4.152 implementation. Downloaded source and scratch audit results were
+used temporarily and removed after recording these findings; no model change or
+new training launch was made for this audit.
+
+| Pipeline | Image processing | Supervision |
+|---|---|---|
+| Original custom U-Net | Grayscale; full-frame1st/99th-percentile normalization;512 crops,75% foreground-centered | Binary foreground masks |
+| Community U-Net++ reproduced here | Grayscale; fixed[-1,1] normalization; random512 crops; full2048 final inference | COCO-rasterized binary masks per annotator record |
+| Anthony Therrien's inspected latest notebook | Grayscale; disk median and16–84 percentile spread normalization;1888 central crop at native scale; geometric/intensity augmentation | COCO-rasterized union of all annotators per physical photo |
+| Our YOLO | Standard three-channel image loading and /255; full2048; mild geometry/brightness augmentation | Separate annotator records; normalized instance polygons; OpenCV rasterization; mask_ratio2 |
+| HDJoJo's public YOLO notebook | Standard path-based YOLO inference at2048 | Training/label preparation is not exposed |
+
+Community code references are linked above. Ultralytics rasterization reference:
+https://docs.ultralytics.com/reference/data/utils/#ultralytics.data.utils.polygon2mask
+Our audit uses the installed pinned version rather than assuming the evolving
+online documentation matches it exactly.
+
+**Finding1: measurable training-target/evaluation-mask mismatch.** Replayed
+normalized polygon serialization, float32 parsing, polygon resampling, OpenCV
+fillPoly and ratio2 mask resizing on all1,303 validation annotations, without
+random augmentation. Compared reconstructed targets at2048 against COCO masks:
+
+| GT area | Count | Mean IoU, native YOLO rasterization | Mean IoU, ratio2 then nearest upsample | Mean ratio2 mask/GT area |
+|---|---:|---:|---:|---:|
+| <400 | 105 | 0.8136 | 0.7546 | 1.3268 |
+| 400–999 | 391 | 0.8599 | 0.8056 | 1.2402 |
+| 1,000–2,999 | 537 | 0.8932 | 0.8460 | 1.1792 |
+| ≥3,000 | 270 | 0.9265 | 0.8869 | 1.1232 |
+
+The model is supervised with masks that differ from the evaluator, particularly
+for small objects. This is a credible contributor to boundary/extent errors, not
+proof of the cause of missed detections. Every reconstructed ratio2 target still
+exceeded0.5 IoU, so this audit alone cannot explain the recall deficit. Reconstruction
+is a target-fidelity diagnostic, not model PQ or a performance ceiling. Random
+augmentation and learned prediction errors are not included.
+
+In this pinned loss implementation, prototypes are interpolated to target-mask
+size when dimensions differ: do not claim mask_ratio2 is silently discarded by
+another automatic reduction to512. Setting mask_ratio1 removes one reduction but
+does not fix the OpenCV-versus-COCO rasterization difference.
+
+**Finding2: normalization is a candidate, not an established distribution problem.**
+Measured disk-radius900 intensity statistics on all584 train and123 validation
+photos. Train median intensity range120–140, validation119–136; both median129.
+Train16–84 percentile spread range16–49, validation26–44; both median32.
+There is image-to-image contrast variation, but the central train/validation
+statistics overlap strongly. Disk normalization merits an isolated experiment,
+not a claim that missing normalization is the main failure.
+
+**Finding3: annotator handling changes training weights.** Of584 training photos,
+334 have one record,127 have two and123 have three, yielding957 samples. Multi-record
+photos get2–3 times as many presentations. This is a real weighting choice, not
+necessarily a bug: our evaluation also averages annotator records. Photo-balanced
+sampling with one randomly chosen annotator per exposure is a testable alternative.
+Naively unioning all annotators into YOLO targets would risk duplicates/merged object
+identities; the community binary-mask policy does not directly transfer to instances.
+
+**Checks that ruled out simple explanations:** all8,199 labeled polygons lie within
+the community1888 central crop; maximum annotated vertex radius903.137px. No raw
+annotation bounding box triggered the tested size/aspect filter risk (width/height≤2
+or aspect≥100). These are pre-augmentation checks, not a guarantee of no augmentation
+loss or no test filaments outside that crop. Our inputs are already2048, not globally
+shrunk to512. The crop does not magnify filaments unless an additional resize is used.
+
+Priority: test evaluator-consistent COCO instance-mask targets, with controlled mask
+resolution, before increasing model size. Follow with disk intensity normalization
+as a separate ablation. Preserve grouped validation and compare small-object recall,
+mask IoU, FP counts and full-fold PQ. Neither improvement has yet been demonstrated;
+the currently running periodic-checkpoint experiment still uses the original data path.
+
+## Data-pipeline ablations implemented — 2026-09-16
+
+`models/yolo_data_pipeline.py` adds two independent variants selected through
+`models/yolo_instance.py --data-pipeline`:
+
+- `coco`: rasterize the geometrically augmented instance polygons using COCO instead
+  of OpenCV. Retain the baseline mask_ratio2 and resize operation to isolate the
+  rasterizer. Instances remain separate; this does not yet test full-resolution targets.
+- `disk`: retain baseline YOLO masks, but normalize input by solar-disk median and
+  p84-p16 spread. Statistics come from the original image before augmentation, as
+  in Anthony's pipeline. Apply the same normalization in training, built-in validation,
+  final PQ inference and test inference. Preserve three input channels for YOLO.
+
+Both retain30 epochs,2048 input, original grouped fold, seed42, separate annotator
+records, baseline augmentations and periodic PQ checkpoint selection. Neither
+merges annotators nor applies the community central crop. Saved selected.json and
+ data_pipeline.json identify preprocessing needed to reuse each checkpoint.
+
+Notebook `dharun235/solar-fil-yolo-data-ablation` runs `coco`, then `disk`, in separate
+subprocesses and output directories; compare against the periodic-checkpoint baseline.
+Each saves validation.csv, raw masks, selected settings and submission.csv.
+The notebook writes comparison.json after each completed experiment. There is no
+automatic competition submission. Expected duration is roughly8–10 hours for both,
+based on prior training runtime; actual runtime may differ.
+
+Validation before launch:12 tests passed; synthetic one-epoch CPU training, validation,
+checkpoint save/reload completed for both custom trainers. Tests check exact native
+COCO mask fidelity, retained overlap between separate instances, unchanged ratio2
+resize, and agreement among training/validation/inference normalization paths.
+Performance results are pending; passing these checks does not establish a PQ gain.
 
 ## Operational lessons and artifact policy
 
