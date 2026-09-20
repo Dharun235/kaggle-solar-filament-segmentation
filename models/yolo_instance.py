@@ -103,7 +103,7 @@ def main():
     if ultralytics.__version__!='8.4.152':raise RuntimeError('Data pipeline requires ultralytics==8.4.152')
     (out/'data_pipeline.json').write_text(json.dumps(dict(variant='coco',mask_ratio=1,annotation_policy='separate annotator records',normalization='standard /255'),indent=2))
     assert torch.cuda.is_available(),'GPU required'
-    cfg=dict(model='yolov8l-seg.pt',epochs=30,imgsz=2048,batch=1,device=0,workers=2,seed=42,deterministic=True,optimizer='AdamW',lr0=.001,cos_lr=True,patience=30,amp=True,mask_ratio=1,overlap_mask=False,mosaic=0.,mixup=0.,copy_paste=0.,hsv_h=0.,hsv_s=0.,hsv_v=.1,fliplr=.5,flipud=.5,scale=.1,translate=.05,plots=False,cache=False)
+    cfg=dict(model='yolov8l-seg.pt',epochs=30,imgsz=1536,batch=1,device=0,workers=2,seed=42,deterministic=True,optimizer='AdamW',lr0=.001,cos_lr=True,patience=30,amp=True,mask_ratio=1,overlap_mask=False,mosaic=0.,mixup=0.,copy_paste=0.,hsv_h=0.,hsv_s=0.,hsv_v=.1,fliplr=.5,flipud=.5,scale=.1,translate=.05,plots=False,cache=False)
     (out/'config.json').write_text(json.dumps(cfg,indent=2))
     status('training',epochs=cfg['epochs'])
     model=YOLO(cfg.pop('model'))
