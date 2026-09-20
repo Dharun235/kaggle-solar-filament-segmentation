@@ -1,10 +1,15 @@
 # Lessons learned and methods tried
 
-Updated 2026-09-16. This is the single experiment log; update it rather than adding
+Updated 2026-09-20. This is the single experiment log; update it rather than adding
 separate diagnostic reports. Public scores below are the last confirmed results,
 not a fresh leaderboard check.
 
 ## Evaluation rules we keep
+
+Historical validation values below used a pre-alignment local scorer. The scorer
+now follows Kaggle's self-evaluation notebook: all IoU>0.5 links count, one-to-many
+and many-to-one links are retained, and TP/FP/FN are aggregated globally. New runs
+must not be compared directly with historical values until regenerated.
 
 - Use month-grouped fold0, seed42: 584 training photos / 957 annotator records;
   123 validation photos / 197 annotator records; 180 test photos.
@@ -28,7 +33,9 @@ not a fresh leaderboard check.
 | Same U-Net weights, stride256/max blending | 0.170947 | Not submitted | Better overlapping inference |
 | Community U-Net++ EfficientNet-B3, original split | 0.274272 on source split | 0.23 | Annotation-level split allowed shared photos across train/validation |
 | U-Net++ EfficientNet-B3, grouped fold0 | 0.330773 | 0.27 | Same training recipe, leakage-safe split; version350156671 |
-| YOLOv8-S instance segmentation, grouped fold0 | **0.401214** | **0.34** | Best confirmed model so far |
+| YOLOv8-S instance segmentation, grouped fold0 | **0.419444** | **0.36** | Previous baseline |
+| YOLOv8-L community-style inference, grouped fold0 | Pending | Pending | Current pipeline; organizer-style PQ rerun required |
+| YOLO11m-seg instance segmentation, grouped fold0 | 0.401800 | 0.35 | Controlled detector upgrade; rejected |
 
 The previous community U-Net++ scored 0.286305 on 101 annotator records whose
 photos were absent from training. Its retrospective comparison against the original
@@ -131,14 +138,16 @@ inference remain hypotheses here; none should be listed as a demonstrated gain.
 
 ## YOLO: current recipe, diagnosis and changes
 
-Pretrained YOLOv8-S segmentation, Ultralytics8.4.152, 2048 inputs, batch1, 30epochs,
-AdamW1e-3, mask_ratio2, overlap_mask=False, no mosaic/mixup/copy-paste, mild
+Pretrained YOLOv8-L segmentation, Ultralytics8.4.152, 2048 inputs, batch1, 30epochs,
+AdamW1e-3, mask_ratio1, overlap_mask=False, no mosaic/mixup/copy-paste, mild
 scale/translation/brightness and flips. Annotator records are separate training
-samples. Native-resolution inference uses detection confidence, NMS IoU0.7,
-max_det100 and score-ordered pixel exclusion. Use boxes.conf, not boxes.cls.
+samples. Native-resolution inference follows the community YOLO recipe: confidence
+.3, box NMS IoU0.0, max_det100, score-ordered exclusive masks and minimum area5.
+Use boxes.conf, not boxes.cls. The organizer scorer allows overlaps, but this
+community postprocessing removes them.
 
-Selected best.pt, confidence0.2, cap16, min-area80. Test submission: 1,209 masks,
-175/180 photos with predictions, zero overlapping pixels. Full CPU replay on
+Historical selected best.pt used confidence0.2, cap16 and min-area80. Test submission:
+1,209 masks, 175/180 photos with predictions, zero overlapping pixels. Full CPU replay on
 123 photos / 197 records reproduced PQ **0.4012144075536765 exactly**.
 
 | Diagnostic | Finding |
@@ -191,7 +200,7 @@ new training launch was made for this audit.
 | Original custom U-Net | Grayscale; full-frame1st/99th-percentile normalization;512 crops,75% foreground-centered | Binary foreground masks |
 | Community U-Net++ reproduced here | Grayscale; fixed[-1,1] normalization; random512 crops; full2048 final inference | COCO-rasterized binary masks per annotator record |
 | Anthony Therrien's inspected latest notebook | Grayscale; disk median and16–84 percentile spread normalization;1888 central crop at native scale; geometric/intensity augmentation | COCO-rasterized union of all annotators per physical photo |
-| Our YOLO | Standard three-channel image loading and /255; full2048; mild geometry/brightness augmentation | Separate annotator records; normalized instance polygons; OpenCV rasterization; mask_ratio2 |
+| Our YOLO | Standard three-channel image loading and /255; full2048; mild geometry/brightness augmentation | Separate annotator records; normalized instance polygons; COCO rasterization; mask_ratio1 |
 | HDJoJo's public YOLO notebook | Standard path-based YOLO inference at2048 | Training/label preparation is not exposed |
 
 Community code references are linked above. Ultralytics rasterization reference:
@@ -320,6 +329,20 @@ The run produced1,209 submission masks across175/180 photos with zero overlap.
 This confirms no validation gain from the expanded checkpoint search in this run.
 The data-pipeline ablation completed; its COCO result was retained and its disk result
 was rejected. The main maintained notebook now runs the COCO variant.
+
+## YOLO11m controlled upgrade — completed 2026-09-20
+
+Commit `a285264` changes only the detector from YOLOv8-S to pretrained
+`yolo11m-seg.pt`. The COCO-consistent mask pipeline, grouped fold0, 2048px input,
+30-epoch AdamW schedule, augmentations, checkpoint retention, full-fold PQ
+selection, postprocessing and test export remain fixed. Notebook JSON and the
+COCO data pipeline audit passed; the GitHub source commit used by the notebook is
+`a285264c32b9db3297a0bfd2dc66f08da037d895`.
+
+Kaggle kernel `dharun235/solar-fil-yolo-instance`, public version 3, completed
+with validation PQ **0.401800**, 1,035 submission masks across 174/180 photos,
+and public score **0.35**. This underperformed the maintained YOLOv8-S COCO result
+(validation PQ **0.419444**, public score **0.36**), so YOLOv8-S remains selected.
 
 
 ## Data-pipeline ablation results

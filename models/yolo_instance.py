@@ -1,4 +1,4 @@
-"""Grouped-fold YOLO11m instance segmentation; independent of the U-Net pipeline."""
+"""Grouped-fold YOLOv8-L instance segmentation; independent of the U-Net pipeline."""
 from __future__ import annotations
 import argparse,csv,json,random,sys,hashlib,shutil
 from collections import defaultdict
@@ -9,7 +9,7 @@ from pycocotools import mask as mu
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT))
 from scripts.pipeline_lib import physical_stem
-from scripts.postprocess import pq_score_rles
+from scripts.postprocess import pq_score_rles, pq_stats_rles
 
 
 def split_records(data,fold=0):
@@ -62,11 +62,11 @@ def prepare(data_root,out):
     return config,val_unique,{physical_stem(im['file_name']):[record for record in val if im['file_name']==record['file_name']] for im in val_unique},anns
 
 
-def exclusive_rles(masks,scores,confidence,cap,min_area=80):
+def community_rles(masks,scores,confidence=.3,max_instances=100,min_area=5):
     occupied=np.zeros(masks.shape[1:],bool);result=[]
     for i in np.argsort(-np.asarray(scores),kind='stable'):
         if scores[i]<confidence:continue
-        if len(result)>=cap:break
+        if len(result)>=max_instances:break
         mask=np.asarray(masks[i],bool)&~occupied
         if mask.sum()<min_area:continue
         occupied|=mask
@@ -76,7 +76,7 @@ def exclusive_rles(masks,scores,confidence,cap,min_area=80):
 
 def prediction(model,path,data_pipeline='coco'):
     extra={}
-    r=model.predict(str(path),imgsz=2048,conf=.1,iou=.7,max_det=100,retina_masks=True,device=0,verbose=False,**extra)[0]
+    r=model.predict(str(path),imgsz=2048,conf=.3,iou=0.0,max_det=100,retina_masks=True,device=0,verbose=False,**extra)[0]
     if r.masks is None:return np.zeros((0,*r.orig_shape),bool),np.zeros(0)
     masks=r.masks.data.cpu().numpy()>.5
     if masks.shape[1:]!=tuple(r.orig_shape):raise ValueError('Expected native-resolution masks')
@@ -101,10 +101,9 @@ def main():
     import ultralytics
     from ultralytics import YOLO
     if ultralytics.__version__!='8.4.152':raise RuntimeError('Data pipeline requires ultralytics==8.4.152')
-    (out/'data_pipeline.json').write_text(json.dumps(dict(variant='coco',mask_ratio=2,annotation_policy='separate annotator records',normalization='standard /255'),indent=2))
+    (out/'data_pipeline.json').write_text(json.dumps(dict(variant='coco',mask_ratio=1,annotation_policy='separate annotator records',normalization='standard /255'),indent=2))
     assert torch.cuda.is_available(),'GPU required'
-    # Controlled model upgrade: keep the proven training and postprocessing recipe fixed.
-    cfg=dict(model='yolo11m-seg.pt',epochs=30,imgsz=2048,batch=1,device=0,workers=2,seed=42,deterministic=True,optimizer='AdamW',lr0=.001,cos_lr=True,patience=30,amp=True,mask_ratio=2,overlap_mask=False,mosaic=0.,mixup=0.,copy_paste=0.,hsv_h=0.,hsv_s=0.,hsv_v=.1,fliplr=.5,flipud=.5,scale=.1,translate=.05,plots=False,cache=False)
+    cfg=dict(model='yolov8l-seg.pt',epochs=30,imgsz=2048,batch=1,device=0,workers=2,seed=42,deterministic=True,optimizer='AdamW',lr0=.001,cos_lr=True,patience=30,amp=True,mask_ratio=1,overlap_mask=False,mosaic=0.,mixup=0.,copy_paste=0.,hsv_h=0.,hsv_s=0.,hsv_v=.1,fliplr=.5,flipud=.5,scale=.1,translate=.05,plots=False,cache=False)
     (out/'config.json').write_text(json.dumps(cfg,indent=2))
     status('training',epochs=cfg['epochs'])
     model=YOLO(cfg.pop('model'))
@@ -116,14 +115,14 @@ def main():
     del model
     torch.cuda.empty_cache()
     candidates=sorted((out/'train/weights').glob('pq_epoch*.pt'))+[out/'train/weights/best.pt',out/'train/weights/last.pt']
-    grid=[(c,k) for c in [.1,.2,.3,.4,.5] for k in [4,8,16,100]]
+    grid=[.3]
     trials=[];record_keys=[];per_record={}
     for im in val:
         stem=physical_stem(im['file_name'])
         record_keys.extend((stem,rec['id']) for rec in records[stem])
     prediction_dir=out/'validation_predictions';prediction_dir.mkdir(exist_ok=True)
     for checkpoint in candidates:
-        model=YOLO(str(checkpoint));values={key:[] for key in grid}
+        model=YOLO(str(checkpoint));values={key:[] for key in grid};totals={key:[0.,0,0,0] for key in grid}
         checkpoint_predictions=[]
         for n,im in enumerate(val,1):
             stem=physical_stem(im['file_name'])
@@ -134,12 +133,21 @@ def main():
                 instances.append(dict(score=float(score),rle=dict(size=rle['size'],counts=rle['counts'].decode('ascii'))))
             checkpoint_predictions.append(dict(image_id=stem,instances=instances))
             truth=[[mu.merge(mu.frPyObjects(a['segmentation'],2048,2048)) for a in anns[rec['id']]] for rec in records[stem]]
-            for conf,cap in grid:
-                pred=exclusive_rles(masks,scores,conf,cap)
-                values[(conf,cap)].extend(pq_score_rles(gs,pred) for gs in truth)
+            for conf in grid:
+                pred=community_rles(masks,scores,conf)
+                key=conf
+                values[key].extend(pq_score_rles(gs,pred) for gs in truth)
+                for gs in truth:
+                    si,tp,fp,fn=pq_stats_rles(gs,pred)
+                    totals[key][0]+=si; totals[key][1]+=tp; totals[key][2]+=fp; totals[key][3]+=fn
             status('validation',checkpoint=checkpoint.name,images_done=n,images_total=len(val))
             print(f'{checkpoint.name} validation {n}/{len(val)}',flush=True)
-        for (conf,cap),pq in values.items():trials.append(dict(checkpoint=str(checkpoint),confidence=conf,max_instances=cap,pq=float(np.mean(pq))))
+        for conf,pq in values.items():
+            si,tp,fp,fn=totals[conf]
+            denom=tp+.5*fp+.5*fn
+            trials.append(dict(checkpoint=str(checkpoint),confidence=conf,
+                               pq=float(si/denom if denom else 0.),tp=tp,fp=fp,fn=fn,
+                               mean_record_pq=float(np.mean(pq))))
         per_record[str(checkpoint)]=values
         with (prediction_dir/f'{checkpoint.stem}.jsonl').open('w') as f:
             for row in checkpoint_predictions:f.write(json.dumps(row)+'\n')
@@ -152,27 +160,28 @@ def main():
     selected['validation_predictions']=str(prediction_dir/f"{Path(selected['checkpoint']).stem}.jsonl")
     with (out/'validation.csv').open('w',newline='') as f:
         writer=csv.writer(f);writer.writerow(['image_id','annotation_record_id','pq'])
-        for (stem,record_id),pq in zip(record_keys,per_record[selected['checkpoint']][(selected['confidence'],selected['max_instances'])]):
+        for (stem,record_id),pq in zip(record_keys,per_record[selected['checkpoint']][selected['confidence']]):
             writer.writerow([stem,record_id,pq])
     (out/'selected.json').write_text(json.dumps(selected,indent=2));print('SELECTED',selected,flush=True)
     model=YOLO(selected['checkpoint'])
     images=sorted((args.data_root/'test/test_images').glob('*.jpeg'))
     if len(images)!=180:raise ValueError(f'Expected180 test images, got{len(images)}')
-    seen=0;rows=0
+    seen=0;rows=0;overlap_pixels=0
     with (out/'submission.csv').open('w',newline='') as f:
         writer=csv.writer(f);writer.writerow(['filament_id','segmentation_rle'])
         for n,path in enumerate(images,1):
             masks,scores=prediction(model,path,args.data_pipeline)
-            pred=exclusive_rles(masks,scores,selected['confidence'],selected['max_instances'])
-            occ=np.zeros((2048,2048),bool)
+            pred=community_rles(masks,scores,selected['confidence'])
+            occupied=np.zeros((2048,2048),bool)
             for i,rle in enumerate(pred,1):
                 decoded=mu.decode(rle).astype(bool)
-                assert decoded.any() and not (occ&decoded).any()
-                occ|=decoded
+                assert decoded.any()
+                overlap_pixels += int((occupied & decoded).sum())
+                occupied |= decoded
                 writer.writerow([f'{path.stem}_{i}',rle['counts'].decode('ascii')]);rows+=1
             seen+=bool(pred)
             status('test_inference',images_done=n,images_total=len(images))
-    status('complete',validation_pq=selected['pq'],submission_rows=rows,images_with_predictions=seen,test_images=len(images),overlap_pixels=0)
+    status('complete',validation_pq=selected['pq'],submission_rows=rows,images_with_predictions=seen,test_images=len(images),overlap_pixels=overlap_pixels)
     print('DONE',out/'submission.csv',flush=True)
 
 if __name__=='__main__':main()

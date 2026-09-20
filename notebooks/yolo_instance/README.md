@@ -1,7 +1,7 @@
 # Maintained YOLO instance segmentation pipeline
 
-Pretrained YOLO11m-seg segmentation, 2048px inputs, batch1, 30 epochs, AdamW,
-full-resolution output masks, training mask_ratio2. No mosaic or copy-paste.
+Pretrained YOLOv8-L segmentation, 2048px inputs, batch1, 30 epochs, AdamW,
+full-resolution output masks, training mask_ratio1. No mosaic or copy-paste.
 Ultralytics version: 8.4.152. Model size is chosen for T4 memory at native input resolution.
 
 Uses the same month-grouped fold0:584 training photos (957 separate
@@ -12,14 +12,15 @@ annotation record per validation photo; final PQ scores every annotator record.
 
 Retains checkpoints after epochs 5, 10, 15, 20, 25 and 30. After training, compares
 all retained checkpoints plus best-by-YOLO-mAP and final checkpoints using native-resolution PQ with
-confidence .1/.2/.3/.4/.5 and caps4/8/16/100. Removes overlaps in descending detection
-confidence order and drops masks smaller than80 pixels after exclusion. Uses boxes.conf,
-not boxes.cls, for scores. COCO-consistent polygon rasterization is the maintained
-data pipeline and produced validation PQ0.419444.
+community-style confidence .3, box NMS IoU0.0, max_det100, score-ordered exclusive
+masks, and minimum area5 pixels. Uses boxes.conf, not boxes.cls, for scores.
+COCO-consistent polygon rasterization is the maintained
+data pipeline. Historical PQ values used the pre-alignment local scorer;
+checkpoint selection now uses organizer-style PQ.
 
 Checkpoint selection uses all 197 annotator records on the same 123 held-out photos.
 It runs after training to avoid loading an extra model alongside the training model.
-`validation_predictions/<checkpoint>.jsonl` saves pre-exclusion instance masks as
+`validation_predictions/<checkpoint>.jsonl` saves pre-selection instance masks as
 COCO RLE and detection confidence for every validation photo, including empty predictions.
 `validation.csv` records the selected model's PQ for each annotator record.
 `validation_grid.json` is saved after each evaluated checkpoint. The expanded

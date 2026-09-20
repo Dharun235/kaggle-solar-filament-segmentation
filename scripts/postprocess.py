@@ -15,7 +15,7 @@ except ImportError:
 from pycocotools import mask as mask_utils
 
 
-def greedy_exclusive(items, confidence, max_instances, min_area):
+def ranked_instances(items, confidence, max_instances=100, min_area=5):
     kept = []
     occupied = np.zeros((2048, 2048), dtype=bool)
     for item in sorted(items, key=lambda x: float(x.get("score", 0)), reverse=True):
@@ -50,6 +50,25 @@ def expected_stems(path):
     return {physical_stem(row["physical_id"]) for row in jsonl_read(path)}
 
 
+def pq_stats_rles(gt_rles, pred_rles, threshold=0.5):
+    """Return organizer-style PQ components for one image/annotation record.
+
+    Every GT/prediction pair above threshold is a TP. One-to-many and
+    many-to-one links are intentionally retained, matching organizer notebook.
+    """
+    if gt_rles and pred_rles:
+        ious = mask_utils.iou(pred_rles, gt_rles, [0] * len(gt_rles)).T
+        hits = ious > threshold
+        return (float(ious[hits].sum()), int(hits.sum()),
+                int((hits.sum(axis=0) == 0).sum()),
+                int((hits.sum(axis=1) == 0).sum()))
+    if gt_rles:
+        return 0.0, 0, 0, len(gt_rles)
+    if pred_rles:
+        return 0.0, 0, len(pred_rles), 0
+    return 0.0, 0, 0, 0
+
+
 def pq_score(gt, pred, threshold=0.5):
     gt_rles = [mask_utils.encode(np.asarray(m, dtype=np.uint8, order="F")[:, :, None])[0] for m in gt]
     pred_rles = [mask_utils.encode(np.asarray(m, dtype=np.uint8, order="F")[:, :, None])[0] for m in pred]
@@ -57,20 +76,9 @@ def pq_score(gt, pred, threshold=0.5):
 
 
 def pq_score_rles(gt_rles, pred_rles, threshold=0.5):
-    # pycocotools signature is iou(dt, gt, iscrowd); transpose to [gt, pred].
-    ious = mask_utils.iou(pred_rles, gt_rles, [0] * len(gt_rles)).T if gt_rles and pred_rles else np.empty((len(gt_rles), len(pred_rles)))
-    pairs = []
-    for i in range(len(gt_rles)):
-        for j in range(len(pred_rles)):
-            if ious[i, j] > 0:
-                pairs.append((float(ious[i, j]), i, j))
-    used_g, used_p, tp_iou = set(), set(), []
-    for iou, i, j in sorted(pairs, reverse=True):
-        # Official scorer uses strict IoU > 0.5 matching.
-        if iou > threshold and i not in used_g and j not in used_p:
-            used_g.add(i); used_p.add(j); tp_iou.append(iou)
-    return (sum(tp_iou) / (len(tp_iou) + 0.5 * (len(pred_rles) - len(used_p)) + 0.5 * (len(gt_rles) - len(used_g)))
-            if gt_rles or pred_rles else 1.0)
+    tp_iou, tp, fp, fn = pq_stats_rles(gt_rles, pred_rles, threshold)
+    denom = tp + 0.5 * fp + 0.5 * fn
+    return tp_iou / denom if denom else 0.0
 
 
 def main():
@@ -79,10 +87,7 @@ def main():
     ap.add_argument("--output", type=Path, required=True)
     ap.add_argument("--confidence", type=float, default=0.2)
     ap.add_argument("--confidence-grid", type=float, nargs="*")
-    ap.add_argument("--max-instances", type=int, default=10)
-    ap.add_argument("--max-instances-grid", type=int, nargs="*",
-                    help="candidate instance caps to tune on validation PQ")
-    ap.add_argument("--min-area", type=int, default=16)
+    ap.add_argument("--min-area", type=int, default=5)
     ap.add_argument("--ground-truth", type=Path)
     ap.add_argument("--selected-confidence-file", type=Path)
     ap.add_argument("--metrics-output", type=Path,
@@ -103,38 +108,37 @@ def main():
             raise SystemExit(f"missing prediction records={len(missing)}")
     gt = gt_by_stem(args.ground_truth) if args.ground_truth else None
     confidence_grid = args.confidence_grid or [args.confidence]
-    max_instances_grid = args.max_instances_grid or [args.max_instances]
     best = None
     metrics = []
     for conf in confidence_grid:
-        for max_instances in max_instances_grid:
-            if max_instances < 0:
-                raise SystemExit("max instances must be non-negative")
-            scores = []
-            for rec in tqdm(records, desc=f"PQ threshold {conf:.2f}, cap {max_instances}", unit="image", leave=False):
-                kept = greedy_exclusive(rec.get("instances", []), conf, max_instances, args.min_area)
-                stem = physical_stem(rec["image_id"])
-                if gt is not None and stem in gt:
-                    pm = [m for _, m in kept]
-                    # Score each independent annotator record separately; never merge labels.
-                    scores.extend(pq_score([polygons_to_mask(a["segmentation"]) for a in anns], pm)
-                                  for anns in gt[stem])
-            mean = float(np.mean(scores)) if scores else None
-            metrics.append({"confidence": conf, "max_instances": max_instances, "panoptic_quality": mean})
-            if best is None or (mean is not None and mean > best[0]):
-                best = (mean, conf, max_instances)
+        total = [0.0, 0, 0, 0]
+        for rec in tqdm(records, desc=f"PQ threshold {conf:.2f}", unit="image", leave=False):
+            kept = ranked_instances(rec.get("instances", []), conf, min_area=args.min_area)
+            stem = physical_stem(rec["image_id"])
+            if gt is not None and stem in gt:
+                pm = [m for _, m in kept]
+                pred_rles = [mask_utils.encode(np.asarray(m, dtype=np.uint8, order="F")[:, :, None])[0] for m in pm]
+                for anns in gt[stem]:
+                    gt_rles = [mask_utils.encode(np.asarray(polygons_to_mask(a["segmentation"]), dtype=np.uint8, order="F")[:, :, None])[0] for a in anns]
+                    stats = pq_stats_rles(gt_rles, pred_rles)
+                    for i, value in enumerate(stats): total[i] += value
+        _, tp, fp, fn = total
+        denom = tp + .5 * fp + .5 * fn
+        mean = float(total[0] / denom) if denom else None
+        metrics.append({"confidence": conf, "panoptic_quality": mean})
+        if best is None or best[0] is None or (mean is not None and mean > best[0]):
+            best = (mean, conf)
     conf = best[1] if gt is not None else args.confidence
-    max_instances = best[2] if gt is not None else args.max_instances
     if args.selected_confidence_file:
         args.selected_confidence_file.parent.mkdir(parents=True, exist_ok=True)
         args.selected_confidence_file.write_text(json.dumps({
-            "confidence": conf, "max_instances": max_instances,
+            "confidence": conf,
             "local_pq": best[0], "metric": "panoptic_quality", "iou_match": ">0.5",
         }) + "\n")
     if args.metrics_output:
         args.metrics_output.parent.mkdir(parents=True, exist_ok=True)
         with args.metrics_output.open("w", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=["confidence", "max_instances", "panoptic_quality"])
+            writer = csv.DictWriter(f, fieldnames=["confidence", "panoptic_quality"])
             writer.writeheader()
             writer.writerows(metrics)
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -142,11 +146,11 @@ def main():
         writer = csv.writer(f); writer.writerow(["filament_id", "segmentation_rle"])
         rows = 0
         for rec in tqdm(records, desc="write RLE submission", unit="image"):
-            kept = greedy_exclusive(rec.get("instances", []), conf, max_instances, args.min_area)
+            kept = ranked_instances(rec.get("instances", []), conf, min_area=args.min_area)
             for idx, (_, mask) in enumerate(kept, 1):
                 writer.writerow([f"{physical_stem(rec['image_id'])}_{idx}", encode_mask(mask)])
                 rows += 1
-    print(f"wrote={args.output} rows={rows} confidence={conf:.3f} max_instances={max_instances} local_pq={best[0]}")
+    print(f"wrote={args.output} rows={rows} confidence={conf:.3f} local_pq={best[0]}")
 
 
 if __name__ == "__main__":
